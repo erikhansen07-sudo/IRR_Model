@@ -965,6 +965,377 @@ function AdvisorView({ deals, assumptions }) {
   )
 }
 
+// ─── Agent Intelligence ────────────────────────────────────────────────────
+
+function findMentionedDeals(text, deals) {
+  const t = text.toLowerCase()
+  return deals.filter(d => {
+    const name = d.name.toLowerCase()
+    const street = (d.address || '').toLowerCase().split(' ').slice(1, 3).join(' ')
+    return t.includes(name) || (street.length > 3 && t.includes(street))
+  })
+}
+
+function detectGoal(text) {
+  const t = text.toLowerCase()
+  if (t.match(/irr|return|yield/)) return 'irr'
+  if (t.match(/cap rate|capitalization/)) return 'cap_rate'
+  if (t.match(/cash.on.cash|cash return|coc/)) return 'coc'
+  if (t.match(/equity multiple|multiple|em\b/)) return 'equity_mult'
+  if (t.match(/least capital|lowest capital|cheapest|smallest check|minimum equity/)) return 'min_capital'
+  if (t.match(/payback|recoup|break.?even|fastest/)) return 'payback'
+  if (t.match(/safe|risk|conservative|protect|downside|dscr/)) return 'safest'
+  if (t.match(/overall|best deal|recommend|buy|which one/)) return 'overall'
+  return null
+}
+
+function detectIntent(text) {
+  const t = text.toLowerCase()
+  if (t.match(/why.*(#?1|number one|top|first|win|best|ranked)/)) return 'explain_ranking'
+  if (t.match(/compare|vs\.?|versus|difference between|better|between/)) return 'compare'
+  if (t.match(/risk|red flag|concern|worry|watch out|downside|problem/)) return 'risks'
+  if (t.match(/what is|explain|define|what does|how does|tell me about (irr|cap|noi|dscr|grm|equity)/)) return 'define'
+  if (t.match(/what should i (buy|do|pick|choose)|recommend|advice|best deal|which one/)) return 'recommend'
+  if (t.match(/rank|sort|order|list all|show all/)) return 'rank_all'
+  if (t.match(/best.*for|optimize for|goal/)) return 'goal_based'
+  if (t.match(/more|deeper|detail|explain|tell me (more|about)/)) return 'deep_dive'
+  return 'deep_dive'
+}
+
+function agentResponse(input, deals, assumptions, history) {
+  const allM = deals.map(d => ({ deal: d, m: computeMetrics(d, assumptions) }))
+    .filter(dm => dm.deal.purchasePrice > 0 && dm.deal.buildingSize > 0)
+
+  const mentioned = findMentionedDeals(input, deals)
+  const intent = detectIntent(input)
+  const goalId = detectGoal(input)
+  const t = input.toLowerCase()
+
+  // ── Define a term ──
+  if (intent === 'define') {
+    const defs = {
+      irr: `**IRR (Internal Rate of Return)** is the annualized return that makes the NPV of all cash flows equal to zero. Levered IRR accounts for debt — it's your return on equity after paying the bank. Unlevered IRR measures the asset itself regardless of financing. Rule of thumb: levered IRR below 10% is thin; 12-15%+ is solid for industrial.`,
+      'cap rate': `**Cap Rate** = NOI ÷ Purchase Price. It's the income yield if you paid all cash. A 6% cap means you earn $6 for every $100 invested before debt service. Higher cap = more income relative to price, but often also more risk or older vintage. Current industrial market: 5.5–7% is typical.`,
+      noi: `**NOI (Net Operating Income)** = Effective Gross Income minus Operating Expenses. It's what the property earns before debt service, taxes, and depreciation. It's the number that drives cap rate, DSCR, and exit value.`,
+      dscr: `**DSCR (Debt Service Coverage Ratio)** = NOI ÷ Annual Debt Service. A 1.25x DSCR means for every $1.25 of NOI, you owe the bank $1.00. Lenders typically require ≥1.20–1.25x. Below 1.0x means the property can't pay its own debt.`,
+      grm: `**GRM (Gross Rent Multiplier)** = Price ÷ Gross Potential Rent. Quick and dirty valuation sanity check — doesn't account for expenses. Lower GRM = more income relative to price.`,
+      'equity multiple': `**Equity Multiple** = Total equity returned ÷ Equity invested. A 1.5x means you doubled your money by 50%. Below 1.0x means you lost money in nominal terms. Target ≥ 1.5x over a 10-year hold.`,
+    }
+    const match = Object.keys(defs).find(k => t.includes(k))
+    return match ? defs[match] : `Ask me to define cap rate, IRR, NOI, DSCR, GRM, or equity multiple and I'll break it down.`
+  }
+
+  // ── No deals with pricing ──
+  if (allM.length === 0) return `None of your deals have purchase price and building size filled in yet. Add that data and I can give you real analysis.`
+
+  // ── Full recommendation ──
+  if (intent === 'recommend' && mentioned.length === 0) {
+    const ranked = rankDeals(allM, 'overall')
+    const w = ranked[0], ru = ranked[1]
+    const wm = w.m
+    const lines = [
+      `**Buy ${w.deal.name}.** Here's the full case:`,
+      ``,
+      `It leads the pool on a weighted composite — ${fmt.pct(wm.irrLev)} levered IRR, ${fmt.pct(wm.capRate)} cap rate, ${fmt.mult(wm.equityMult)} equity multiple over a ${w.deal.holdYears || 10}-year hold. ${ru ? `That's meaningfully ahead of ${ru.deal.name} on an overall basis.` : ''}`,
+      ``,
+      `NOI of ${fmt.currency(wm.noi)} on a ${fmt.currency(w.deal.purchasePrice)} acquisition (${fmt.psf(wm.pricePSF)}/SF). ${wm.dscr ? `DSCR of ${wm.dscr.toFixed(2)}x is lender-friendly.` : ''}`,
+    ]
+    const risks = []
+    if (wm.capRate < 0.055) risks.push(`cap rate is below 5.5% — you're relying on rent growth`)
+    if (wm.dscr && wm.dscr < 1.25) risks.push(`DSCR is tighter than 1.25x`)
+    if (w.deal.yearBuilt && w.deal.yearBuilt < 1990) risks.push(`${w.deal.yearBuilt} vintage — budget for capex`)
+    if (risks.length > 0) lines.push(``, `**Watch:** ${risks.join('; ')}.`)
+    return lines.join('\n')
+  }
+
+  // ── Goal-based ranking ──
+  if ((intent === 'goal_based' || goalId) && mentioned.length === 0) {
+    const gid = goalId || 'overall'
+    const ranked = rankDeals(allM, gid)
+    const goal = GOALS.find(g => g.id === gid)
+    const w = ranked[0], ru = ranked[1]
+    const lines = [
+      `**For "${goal?.label}" — ${w.deal.name} wins.**`,
+      ``,
+      fmtGoalValue(gid, w.m) + ` — ${ru ? `vs. ${fmtGoalValue(gid, ru.m)} for ${ru.deal.name}` : 'best in the pool'}.`,
+      ``,
+      `Full ranking:`,
+      ...ranked.map((r, i) => `${i === 0 ? '🥇' : `${i + 1}.`} **${r.deal.name}** — ${fmtGoalValue(gid, r.m)} (score: ${r.score.toFixed(0)}/100)`),
+    ]
+    return lines.join('\n')
+  }
+
+  // ── Rank all ──
+  if (intent === 'rank_all') {
+    const gid = goalId || 'overall'
+    const ranked = rankDeals(allM, gid)
+    const goal = GOALS.find(g => g.id === gid)
+    const lines = [
+      `**Ranked by ${goal?.label || 'Overall'}:**`,
+      '',
+      ...ranked.map((r, i) => {
+        const m = r.m
+        return `${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`} **${r.deal.name}** — IRR ${fmt.pct(m.irrLev)} · Cap ${fmt.pct(m.capRate)} · EM ${fmt.mult(m.equityMult)} · Score ${r.score.toFixed(0)}/100`
+      }),
+    ]
+    return lines.join('\n')
+  }
+
+  // ── Compare two deals ──
+  if (intent === 'compare' && mentioned.length >= 2) {
+    const a = allM.find(dm => dm.deal.id === mentioned[0].id)
+    const b = allM.find(dm => dm.deal.id === mentioned[1].id)
+    if (!a || !b) return `I couldn't find metrics for both deals. Make sure they have pricing filled in.`
+    const am = a.m, bm = b.m
+    const wins = { [a.deal.name]: 0, [b.deal.name]: 0 }
+    const rows = [
+      { label: 'Price', aVal: fmt.currency(a.deal.purchasePrice), bVal: fmt.currency(b.deal.purchasePrice), winner: a.deal.purchasePrice < b.deal.purchasePrice ? a.deal.name : b.deal.name },
+      { label: 'Cap Rate', aVal: fmt.pct(am.capRate), bVal: fmt.pct(bm.capRate), winner: (am.capRate || 0) > (bm.capRate || 0) ? a.deal.name : b.deal.name },
+      { label: 'Levered IRR', aVal: fmt.pct(am.irrLev), bVal: fmt.pct(bm.irrLev), winner: (am.irrLev || 0) > (bm.irrLev || 0) ? a.deal.name : b.deal.name },
+      { label: 'NOI', aVal: fmt.currency(am.noi), bVal: fmt.currency(bm.noi), winner: (am.noi || 0) > (bm.noi || 0) ? a.deal.name : b.deal.name },
+      { label: 'Equity Multiple', aVal: fmt.mult(am.equityMult), bVal: fmt.mult(bm.equityMult), winner: (am.equityMult || 0) > (bm.equityMult || 0) ? a.deal.name : b.deal.name },
+      { label: 'DSCR', aVal: am.dscr ? am.dscr.toFixed(2) + 'x' : '—', bVal: bm.dscr ? bm.dscr.toFixed(2) + 'x' : '—', winner: (am.dscr || 0) > (bm.dscr || 0) ? a.deal.name : b.deal.name },
+      { label: 'Equity Required', aVal: fmt.currency(am.equity), bVal: fmt.currency(bm.equity), winner: (am.equity || 0) < (bm.equity || 0) ? a.deal.name : b.deal.name },
+      { label: 'Break-even Occ.', aVal: fmt.pct(am.breakEven), bVal: fmt.pct(bm.breakEven), winner: (am.breakEven || 1) < (bm.breakEven || 1) ? a.deal.name : b.deal.name },
+    ]
+    rows.forEach(r => { if (r.winner) wins[r.winner] = (wins[r.winner] || 0) + 1 })
+    const overallWinner = wins[a.deal.name] >= wins[b.deal.name] ? a.deal.name : b.deal.name
+    const lines = [
+      `**${a.deal.name} vs. ${b.deal.name}**`,
+      '',
+      ...rows.map(r => `**${r.label}:** ${a.deal.name} ${r.aVal} · ${b.deal.name} ${r.bVal}${r.winner ? ` → ${r.winner} wins` : ''}`),
+      '',
+      `**Bottom line:** ${overallWinner} wins ${wins[overallWinner]} of ${rows.length} categories. ${overallWinner === a.deal.name ? a.deal.name : b.deal.name} is the stronger deal on balance.`,
+    ]
+    return lines.join('\n')
+  }
+
+  // ── Explain ranking ──
+  if (intent === 'explain_ranking') {
+    const gid = goalId || 'overall'
+    const ranked = rankDeals(allM, gid)
+    const w = ranked[0], ru = ranked[1]
+    const wm = w.m
+    const cf = wm.noi - wm.annualDS
+    const payback = cf > 0 ? (wm.equity / cf).toFixed(1) : null
+    const lines = [
+      `**Why ${w.deal.name} is #1 (${GOALS.find(g => g.id === gid)?.label || 'Overall'})**`,
+      ``,
+      `It leads because it scores highest on a weighted combination of the key return metrics:`,
+      ``,
+      `· **Levered IRR:** ${fmt.pct(wm.irrLev)}${ru ? ` vs. ${fmt.pct(ru.m.irrLev)} for ${ru.deal.name}` : ''}`,
+      `· **Cap Rate:** ${fmt.pct(wm.capRate)} — ${wm.capRate >= 0.06 ? 'above the 6% threshold, solid income yield' : 'slightly thin but competitive'}`,
+      `· **Equity Multiple:** ${fmt.mult(wm.equityMult)} over ${w.deal.holdYears || 10} years`,
+      `· **NOI:** ${fmt.currency(wm.noi)} (${fmt.psf(wm.noiPSF)}/SF)`,
+      `· **DSCR:** ${wm.dscr ? wm.dscr.toFixed(2) + 'x' : '—'}`,
+      payback ? `· **Payback:** ~${payback} years to recoup equity from cash flow` : '',
+      ``,
+      `The gap matters too — it isn't just barely winning. Its composite score is ${w.score.toFixed(0)}/100 vs. ${ru ? ru.score.toFixed(0) + '/100 for ' + ru.deal.name : 'the rest of the field'}.`,
+    ].filter(Boolean)
+
+    const risks = []
+    if (wm.capRate < 0.055) risks.push(`thin cap rate (${fmt.pct(wm.capRate)}) — you're betting on rent growth`)
+    if (wm.dscr && wm.dscr < 1.25) risks.push(`DSCR of ${wm.dscr.toFixed(2)}x is below lender comfort`)
+    if (w.deal.yearBuilt && w.deal.yearBuilt < 1990) risks.push(`${w.deal.yearBuilt} vintage — deferred maintenance risk`)
+    if (w.deal.leaseType === 'Vacant') risks.push(`currently vacant — you're underwriting lease-up`)
+    if (risks.length > 0) lines.push('', `**But watch:** ${risks.join('; ')}.`)
+    return lines.join('\n')
+  }
+
+  // ── Risks for a specific deal ──
+  if (intent === 'risks' && mentioned.length > 0) {
+    const dm = allM.find(x => x.deal.id === mentioned[0].id)
+    if (!dm) return `I don't have metrics for ${mentioned[0].name} — check that pricing is filled in.`
+    const { deal: d, m } = dm
+    const flags = []
+    if (!d.purchasePrice) flags.push(`No purchase price — can't underwrite returns`)
+    if (m.capRate && m.capRate < 0.05) flags.push(`Cap rate of ${fmt.pct(m.capRate)} is thin — priced for near-perfection on rent growth`)
+    if (m.irrLev && m.irrLev < 0.08) flags.push(`Levered IRR of ${fmt.pct(m.irrLev)} is below a healthy 8% threshold`)
+    if (m.equityMult && m.equityMult < 1.2) flags.push(`Equity multiple of ${fmt.mult(m.equityMult)} is dangerously close to losing money in real terms`)
+    if (m.dscr && m.dscr < 1.25) flags.push(`DSCR of ${m.dscr.toFixed(2)}x is tight — lenders will push back`)
+    if (m.dscr && m.dscr < 1.0) flags.push(`DSCR below 1.0x — the property can't service its own debt from operations`)
+    if (m.breakEven && m.breakEven > 0.85) flags.push(`${fmt.pct(m.breakEven)} break-even occupancy leaves almost no cushion`)
+    if (d.yearBuilt && d.yearBuilt < 1985) flags.push(`Built ${d.yearBuilt} — older vintage means environmental risk, lower ceiling heights, and potential capex surprises`)
+    if (d.leaseType === 'Vacant') flags.push(`Currently vacant — you're buying on a pro forma, not in-place income`)
+    if (d.leaseType === 'Modified Gross') flags.push(`MG lease — landlord absorbs expense risk. Validate actual expense history`)
+    if (d.tenantCount === 1) flags.push(`Single tenant — 100% vacancy risk on lease expiration`)
+    if (!d.sprinklered || d.sprinklered === 'No') flags.push(`Not sprinklered — limits tenant pool and may affect insurance`)
+
+    if (flags.length === 0) return `**${d.name} looks reasonably clean.** No major red flags based on the data entered. Biggest unknown is whatever's missing — double-check operating expense details and lease terms.`
+
+    return [`**Red flags for ${d.name}:**`, '', ...flags.map(f => `⚠ ${f}`)].join('\n')
+  }
+
+  // ── Deep dive on a specific deal ──
+  if (mentioned.length > 0) {
+    const dm = allM.find(x => x.deal.id === mentioned[0].id)
+    if (!dm) {
+      const d = mentioned[0]
+      return `**${d.name}** — ${d.address}, ${d.city}. No financial data yet (missing purchase price or SF). Fill those in and I can give you the full picture.`
+    }
+    const { deal: d, m } = dm
+    const ranked = rankDeals(allM, 'overall')
+    const rank = ranked.findIndex(r => r.deal.id === d.id) + 1
+    const cf = m.noi - m.annualDS
+    const payback = cf > 0 ? (m.equity / cf).toFixed(1) : null
+
+    const lines = [
+      `**${d.name}** — ${d.address}, ${d.city}`,
+      `${d.buildingSize?.toLocaleString()} SF · ${d.propertyType} · Built ${d.yearBuilt || 'N/A'} · ${d.leaseType || '—'} lease`,
+      ``,
+      `**Returns**`,
+      `· Cap Rate: ${fmt.pct(m.capRate)}`,
+      `· Levered IRR: ${fmt.pct(m.irrLev)}`,
+      `· Unlevered IRR: ${fmt.pct(m.irrUnlev)}`,
+      `· Cash-on-Cash: ${fmt.pct(m.coc)}`,
+      `· Equity Multiple: ${fmt.mult(m.equityMult)} over ${d.holdYears || 10} years`,
+      payback ? `· Payback Period: ~${payback} years` : '',
+      ``,
+      `**Income & Debt**`,
+      `· NOI: ${fmt.currency(m.noi)} (${fmt.psf(m.noiPSF)}/SF)`,
+      `· DSCR: ${m.dscr ? m.dscr.toFixed(2) + 'x' : '—'}`,
+      `· Break-even Occupancy: ${fmt.pct(m.breakEven)}`,
+      ``,
+      `**Capital Stack**`,
+      `· Purchase Price: ${fmt.currency(d.purchasePrice)} (${fmt.psf(m.pricePSF)}/SF)`,
+      `· Equity Required: ${fmt.currency(m.equity)}`,
+      `· Loan Amount: ${fmt.currency(m.loanAmt)} at ${fmt.pct(m.ltv_actual)} LTV`,
+      `· Exit Value (${d.holdYears || 10}yr): ${fmt.currency(m.exitValue)}`,
+      ``,
+      `**Overall rank in pool: #${rank} of ${allM.length}**`,
+    ].filter(Boolean)
+
+    if (d.brokerNotes) lines.push('', `**Notes:** ${d.brokerNotes}`)
+    return lines.join('\n')
+  }
+
+  // ── Fallback ──
+  const suggestions = [
+    `Try: "Why is ${allM[0]?.deal.name} ranked #1?"`,
+    `Or: "Compare ${allM[0]?.deal.name} and ${allM[1]?.deal.name}"`,
+    `Or: "What are the risks with ${allM[allM.length - 1]?.deal.name}?"`,
+    `Or: "Which deal is best for lowest capital?"`,
+    `Or: "What is IRR?"`,
+  ]
+  return `I can help with deal analysis, comparisons, risk flags, ranking explanations, and metric definitions.\n\n${suggestions.filter(Boolean).join('\n')}`
+}
+
+function AgentView({ deals, assumptions }) {
+  const [messages, setMessages] = useState([
+    {
+      role: 'agent',
+      text: `Hey — I'm your J3 deal advisor. I have full context on all ${deals.length} properties in your pipeline.\n\nAsk me anything:\n· "Why is Monarch Park Place #1 overall?"\n· "Compare Beatty Drive and Via El Centro"\n· "What are the risks with 27th St?"\n· "Which deal needs the least capital?"\n· "What should I buy?"`
+    }
+  ])
+  const [input, setInput] = useState('')
+  const [thinking, setThinking] = useState(false)
+  const bottomRef = useState(null)
+  const endRef = { current: null }
+
+  const send = () => {
+    const q = input.trim()
+    if (!q) return
+    const userMsg = { role: 'user', text: q }
+    const newHistory = [...messages, userMsg]
+    setMessages(newHistory)
+    setInput('')
+    setThinking(true)
+    setTimeout(() => {
+      const response = agentResponse(q, deals, assumptions, newHistory)
+      setMessages(prev => [...prev, { role: 'agent', text: response }])
+      setThinking(false)
+    }, 400)
+  }
+
+  const CHIPS = [
+    "What should I buy?",
+    "Rank all deals",
+    "Best cap rate?",
+    "Why is Via El Centro #1?",
+    "Risks on 27th St",
+    "Compare Beatty Drive and Monarch Park",
+    "Which needs least capital?",
+    "What is IRR?",
+  ]
+
+  function MsgText({ text }) {
+    const parts = text.split('\n')
+    return (
+      <div style={{ lineHeight: 1.7, fontSize: 13 }}>
+        {parts.map((p, i) => {
+          if (!p) return <br key={i} />
+          const rendered = p.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          return <div key={i} dangerouslySetInnerHTML={{ __html: rendered }} />
+        })}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', maxWidth: 820 }}>
+      {/* Suggestion chips */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '0 0 14px 0', flexShrink: 0 }}>
+        {CHIPS.map(c => (
+          <button key={c} onClick={() => { setInput(c); setTimeout(() => document.getElementById('agent-input')?.focus(), 50) }}
+            style={{ padding: '4px 12px', borderRadius: 20, fontSize: 11, background: '#1e2535', color: '#94a3b8', border: '1px solid #2d3748', cursor: 'pointer' }}>
+            {c}
+          </button>
+        ))}
+      </div>
+
+      {/* Messages */}
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, paddingBottom: 16 }}>
+        {messages.map((msg, i) => (
+          <div key={i} style={{ display: 'flex', gap: 10, justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+            {msg.role === 'agent' && (
+              <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'linear-gradient(135deg,#4f8ef7,#7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0, marginTop: 2 }}>J</div>
+            )}
+            <div style={{
+              maxWidth: '82%',
+              background: msg.role === 'user' ? '#1e3a6e' : '#151b2e',
+              border: msg.role === 'user' ? '1px solid #2d5cb8' : '1px solid #1e2535',
+              borderRadius: msg.role === 'user' ? '12px 12px 4px 12px' : '4px 12px 12px 12px',
+              padding: '10px 14px',
+              color: '#e2e8f0',
+            }}>
+              <MsgText text={msg.text} />
+            </div>
+          </div>
+        ))}
+        {thinking && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'linear-gradient(135deg,#4f8ef7,#7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>J</div>
+            <div style={{ background: '#151b2e', border: '1px solid #1e2535', borderRadius: '4px 12px 12px 12px', padding: '12px 16px' }}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {[0,1,2].map(i => (
+                  <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: '#4f8ef7', animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite` }} />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <div ref={r => { if (r) r.scrollIntoView({ behavior: 'smooth' }) }} />
+      </div>
+
+      {/* Input */}
+      <div style={{ display: 'flex', gap: 8, paddingTop: 12, borderTop: '1px solid #1e2535', flexShrink: 0 }}>
+        <input
+          id="agent-input"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+          placeholder="Ask anything about your deals..."
+          style={{ flex: 1, padding: '10px 14px', background: '#1e2535', border: '1px solid #2d3748', borderRadius: 8, color: '#e2e8f0', fontSize: 13, outline: 'none' }}
+        />
+        <button onClick={send} style={{ padding: '10px 18px', background: '#4f8ef7', color: '#fff', borderRadius: 8, fontWeight: 600, fontSize: 13 }}>
+          Send
+        </button>
+      </div>
+      <style>{`@keyframes pulse { 0%,100%{opacity:.3;transform:scale(.8)} 50%{opacity:1;transform:scale(1)} }`}</style>
+    </div>
+  )
+}
+
 function ComparisonView({ deals, assumptions }) {
   const metrics = deals.map(d => ({ ...computeMetrics(d, assumptions), deal: d }))
 
@@ -1059,6 +1430,10 @@ export default function App() {
             ...S.tab(view === 'advisor'),
             ...(view !== 'advisor' ? { background: '#1a0d3d', color: '#a78bfa', border: '1px solid #4c1d95' } : { background: '#7c3aed', border: '1px solid #7c3aed' })
           }} onClick={() => setView('advisor')}>⚡ Advisor</button>
+          <button style={{
+            ...S.tab(view === 'agent'),
+            ...(view !== 'agent' ? { background: '#0d1f1a', color: '#68d391', border: '1px solid #1a4731' } : { background: '#276749', border: '1px solid #276749' })
+          }} onClick={() => setView('agent')}>💬 Agent</button>
           <button style={S.tab(view === 'assumptions')} onClick={() => setView('assumptions')}>Assumptions</button>
         </div>
         <div style={{ marginLeft: 'auto', color: '#4a5568', fontSize: 11 }}>
@@ -1067,7 +1442,7 @@ export default function App() {
       </div>
 
       {/* Body */}
-      <div style={S.body}>
+      <div style={{ ...S.body, gridTemplateColumns: view === 'deal' ? '220px 1fr 280px' : '220px 1fr' }}>
         {/* Sidebar */}
         <div style={S.sidebar}>
           <div style={{ color: '#4a5568', fontSize: 10, fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8 }}>Deals</div>
@@ -1095,6 +1470,7 @@ export default function App() {
         <div style={S.main}>
           {view === 'compare' && <ComparisonView deals={deals} assumptions={assumptions} />}
           {view === 'advisor' && <AdvisorView deals={deals} assumptions={assumptions} />}
+          {view === 'agent' && <AgentView deals={deals} assumptions={assumptions} />}
           {view === 'assumptions' && <AssumptionsPanel assumptions={assumptions} onChange={setAssumptions} />}
           {view === 'deal' && activeDeal && (
             <DealForm deal={activeDeal} assumptions={assumptions} onChange={updateDeal} />
@@ -1107,14 +1483,15 @@ export default function App() {
           )}
         </div>
 
-        {/* Metrics Panel */}
-        <div style={S.panel}>
-          {activeDeal && view === 'deal' ? (
-            <MetricsPanel deal={activeDeal} assumptions={assumptions} />
-          ) : (
-            <div style={{ padding: 16, color: '#4a5568', fontSize: 12 }}>Select a deal to see metrics.</div>
-          )}
-        </div>
+        {/* Metrics Panel — only on deal view */}
+        {view === 'deal' && (
+          <div style={S.panel}>
+            {activeDeal
+              ? <MetricsPanel deal={activeDeal} assumptions={assumptions} />
+              : <div style={{ padding: 16, color: '#4a5568', fontSize: 12 }}>Select a deal to see metrics.</div>
+            }
+          </div>
+        )}
       </div>
     </div>
   )
