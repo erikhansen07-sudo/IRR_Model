@@ -189,13 +189,32 @@ function newDeal(overrides = {}) {
 
 const SAMPLE_DEALS = [
   newDeal({
+    name: 'Northgate Blvd', address: '4125-4131 Northgate Blvd', city: 'Sacramento, CA',
+    propertyType: 'Flex', buildingSize: 37799, landAcres: 2.77, yearBuilt: 1983,
+    clearHeight: "16'-20'", dockDoors: 0, driveInDoors: 2, officeFinishPct: 0.74,
+    tenantCount: 1, zoning: 'MP - Industrial', sprinklered: 'Yes', power: 1200,
+    askingPrice: null, purchasePrice: null,
+    rentPSF: null, leaseType: 'NNN', holdYears: 10,
+    status: 'Watch List', brokerNotes: 'No pricing yet. High office finish (74%) limits industrial flex appeal. 1983 vintage — budget for deferred maintenance.',
+  }),
+  newDeal({
     name: 'Beatty Drive', address: '9210 Beatty Drive', city: 'Sacramento, CA',
     propertyType: 'Industrial', buildingSize: 13993, landAcres: 1.02, yearBuilt: 2005,
     clearHeight: "18'-20'", dockDoors: 0, driveInDoors: 5, officeFinishPct: 0.30,
     tenantCount: 1, zoning: 'M-1', sprinklered: 'Yes', power: 400,
     askingPrice: 2400000, purchasePrice: 2400000,
     rentPSF: 10.67, leaseType: 'NNN', leaseExpiration: '12/2028', escalation: 0.03, remainingTerm: 5,
-    propTax: null, insurance: null, holdYears: 10,
+    holdYears: 10,
+  }),
+  newDeal({
+    name: '27th St', address: '6201 27th St', city: 'Sacramento, CA',
+    propertyType: 'Industrial', buildingSize: 23000, landAcres: 1.38, yearBuilt: 1966,
+    clearHeight: "20'", dockDoors: 0, driveInDoors: 6, officeFinishPct: 0.30,
+    tenantCount: 1, zoning: 'M-1S', sprinklered: 'No',
+    askingPrice: 3600000, purchasePrice: 3600000,
+    rentPSF: 7.80, leaseType: 'Vacant', escalation: null, remainingTerm: null,
+    holdYears: 10,
+    brokerNotes: 'Currently vacant. 1966 vintage, no sprinklers. Upside play if leased at market — but execution risk is high.',
   }),
   newDeal({
     name: 'Via El Centro', address: '390-398 Via El Centro', city: 'Oceanside, CA',
@@ -205,6 +224,29 @@ const SAMPLE_DEALS = [
     askingPrice: 7500000, purchasePrice: 7250000,
     rentPSF: 16.51, leaseType: 'NNN', escalation: 0.03,
     holdYears: 10,
+    brokerNotes: 'Negotiated $250K off ask. 5 tenants — diversified income but watch rollover concentration.',
+  }),
+  newDeal({
+    name: 'W 52nd Ave', address: '1220 W 52nd Ave', city: 'Wheat Ridge, CO',
+    propertyType: 'Industrial', buildingSize: 18000, landAcres: 1.62, yearBuilt: 1997,
+    dockDoors: 0, driveInDoors: 0, tenantCount: 6, zoning: 'PID',
+    askingPrice: 3300000, purchasePrice: 3300000,
+    rentPSF: 15.04, leaseType: 'Modified Gross', escalation: 0.04, remainingTerm: null,
+    mgmtFee: 0.05,
+    propTax: 73531, insurance: 13388, maintenance: 9000,
+    utilities: 4699, landscaping: 3970, reserves: 5000,
+    holdYears: 10,
+    brokerNotes: '6 tenants on MG leases — expenses are real and eat into NOI. Landlord pays utilities, insurance, taxes. Confirmed expenses from actual bills.',
+  }),
+  newDeal({
+    name: 'Monarch Park Pl', address: '6268 Monarch Park Place', city: 'Niwot, CO',
+    propertyType: 'Industrial', buildingSize: 37264, landAcres: 3.26, yearBuilt: 1992,
+    clearHeight: null, dockDoors: 4, driveInDoors: 2, officeFinishPct: 0.30,
+    tenantCount: 2, zoning: 'ED - Boulder County', sprinklered: 'Yes', power: 4000,
+    askingPrice: 6746500, purchasePrice: 6746500,
+    rentPSF: 19.01, leaseType: 'NNN', remainingTerm: 5,
+    holdYears: 10,
+    brokerNotes: 'Boulder County submarket. 4000A power is a strong feature. 2-tenant risk — confirm individual lease terms and rollover dates.',
   }),
 ]
 
