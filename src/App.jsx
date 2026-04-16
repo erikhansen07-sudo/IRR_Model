@@ -1027,6 +1027,11 @@ function agentResponse(input, deals, assumptions, history) {
   const goalId = detectGoal(input)
   const t = input.toLowerCase()
 
+  // ── Identity ──
+  if (t.match(/what('?s| is) your name|who are you|what are you called|what should i call you|your name/)) {
+    return `Jameson. I'm the deal advisor built into this pipeline. I know every property you're tracking — the numbers, the rankings, the red flags. Ask me anything.`
+  }
+
   // ── Define a term ──
   if (intent === 'define') {
     const defs = {
