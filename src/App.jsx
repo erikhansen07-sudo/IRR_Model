@@ -967,38 +967,54 @@ function AdvisorView({ deals, assumptions }) {
 
 // ─── Agent Intelligence ────────────────────────────────────────────────────
 
+// Fuzzy deal matching — catches "monarch", "beatty", "27th", "el centro", etc.
 function findMentionedDeals(text, deals) {
   const t = text.toLowerCase()
+  const STOP = new Set(['blvd','drive','street','place','ave','road','the','and','for','with','about','that','this','from','they'])
   return deals.filter(d => {
-    const name = d.name.toLowerCase()
-    const street = (d.address || '').toLowerCase().split(' ').slice(1, 3).join(' ')
-    return t.includes(name) || (street.length > 3 && t.includes(street))
+    const tokens = [d.name, d.address || '', d.city || '']
+      .join(' ').toLowerCase()
+      .split(/[\s,.\-/]+/)
+      .filter(w => w.length > 3 && !STOP.has(w))
+    return tokens.some(w => t.includes(w))
   })
 }
 
 function detectGoal(text) {
   const t = text.toLowerCase()
-  if (t.match(/irr|return|yield/)) return 'irr'
-  if (t.match(/cap rate|capitalization/)) return 'cap_rate'
-  if (t.match(/cash.on.cash|cash return|coc/)) return 'coc'
-  if (t.match(/equity multiple|multiple|em\b/)) return 'equity_mult'
-  if (t.match(/least capital|lowest capital|cheapest|smallest check|minimum equity/)) return 'min_capital'
-  if (t.match(/payback|recoup|break.?even|fastest/)) return 'payback'
-  if (t.match(/safe|risk|conservative|protect|downside|dscr/)) return 'safest'
-  if (t.match(/overall|best deal|recommend|buy|which one/)) return 'overall'
+  if (t.match(/\birr\b|internal rate|best return|highest return/)) return 'irr'
+  if (t.match(/cap rate|capitalization rate|going.in/)) return 'cap_rate'
+  if (t.match(/cash.on.cash|cash return|annual cash|coc\b/)) return 'coc'
+  if (t.match(/equity multiple|total return|wealth|em\b/)) return 'equity_mult'
+  if (t.match(/least capital|lowest capital|cheapest|fewest dollars|smallest (check|equity|investment)|minimum (equity|cash)/)) return 'min_capital'
+  if (t.match(/payback|recoup|how (long|fast|soon)|fastest|quickest/)) return 'payback'
+  if (t.match(/safe|safest|conservative|protect|downside|dscr|risk.adjusted|secure/)) return 'safest'
   return null
 }
 
 function detectIntent(text) {
   const t = text.toLowerCase()
-  if (t.match(/why.*(#?1|number one|top|first|win|best|ranked)/)) return 'explain_ranking'
-  if (t.match(/compare|vs\.?|versus|difference between|better|between/)) return 'compare'
-  if (t.match(/risk|red flag|concern|worry|watch out|downside|problem/)) return 'risks'
-  if (t.match(/what is|explain|define|what does|how does|tell me about (irr|cap|noi|dscr|grm|equity)/)) return 'define'
-  if (t.match(/what should i (buy|do|pick|choose)|recommend|advice|best deal|which one/)) return 'recommend'
-  if (t.match(/rank|sort|order|list all|show all/)) return 'rank_all'
-  if (t.match(/best.*for|optimize for|goal/)) return 'goal_based'
-  if (t.match(/more|deeper|detail|explain|tell me (more|about)/)) return 'deep_dive'
+  // "Why do you like / favor / rank / love X" or "what makes X good/great/special"
+  if (t.match(/why (do you |would you )?(like|love|favor|pick|prefer|rank|rate|choose|recommend|think)/)) return 'explain_ranking'
+  if (t.match(/what (do you |would you )?(like|love|see|think) (about|in)/)) return 'explain_ranking'
+  if (t.match(/what('s| is) (so )?(good|great|special|compelling|appealing|attractive|interesting) about/)) return 'explain_ranking'
+  if (t.match(/why (is it|is that|does it|are they) (ranked|number|#|top|first|best|winning|leading)/)) return 'explain_ranking'
+  if (t.match(/why (#?1|number one|top|first|winning|ranked first)/)) return 'explain_ranking'
+  // Compare
+  if (t.match(/compare|vs\.?|versus|difference (between|in)|stack up|side.by.side|better (than|deal)|which.*better/)) return 'compare'
+  // Risks / concerns
+  if (t.match(/risk|red flag|concern|worry|watch out|downside|problem|issue|wrong with|bad about|weakness|weakness|nervous|worried|sketchy/)) return 'risks'
+  // Definitions
+  if (t.match(/what (is|are|does) (an? )?(irr|cap rate|noi|dscr|grm|equity multiple|cash.on.cash|debt yield|ltv|amortization)\b/)) return 'define'
+  if (t.match(/explain (what |the )?(irr|cap rate|noi|dscr|grm|equity multiple)/)) return 'define'
+  // Recommendation
+  if (t.match(/what (should|would|do) (i|you) (buy|do|pick|choose|go with|pull the trigger)|recommend|your (pick|call|choice|advice)|which (one|deal|property) (should|would|do)/)) return 'recommend'
+  // Rank all
+  if (t.match(/rank (all|them|the|every)|order (all|them)|list (all|them|every|the deals)|show (all|me all|every|the ranking)/)) return 'rank_all'
+  // Goal-based with no specific deal
+  if (t.match(/best (deal )?for|which (is best|wins) (for|on|at)|optimize|prioritize/)) return 'goal_based'
+  // More detail on a deal
+  if (t.match(/tell me more|more (about|on|detail)|dig (in|deeper|into)|break (it )?down|give me (more|detail|the full)|expand|elaborate|full picture/)) return 'deep_dive'
   return 'deep_dive'
 }
 
@@ -1014,55 +1030,127 @@ function agentResponse(input, deals, assumptions, history) {
   // ── Define a term ──
   if (intent === 'define') {
     const defs = {
-      irr: `**IRR (Internal Rate of Return)** is the annualized return that makes the NPV of all cash flows equal to zero. Levered IRR accounts for debt — it's your return on equity after paying the bank. Unlevered IRR measures the asset itself regardless of financing. Rule of thumb: levered IRR below 10% is thin; 12-15%+ is solid for industrial.`,
-      'cap rate': `**Cap Rate** = NOI ÷ Purchase Price. It's the income yield if you paid all cash. A 6% cap means you earn $6 for every $100 invested before debt service. Higher cap = more income relative to price, but often also more risk or older vintage. Current industrial market: 5.5–7% is typical.`,
-      noi: `**NOI (Net Operating Income)** = Effective Gross Income minus Operating Expenses. It's what the property earns before debt service, taxes, and depreciation. It's the number that drives cap rate, DSCR, and exit value.`,
-      dscr: `**DSCR (Debt Service Coverage Ratio)** = NOI ÷ Annual Debt Service. A 1.25x DSCR means for every $1.25 of NOI, you owe the bank $1.00. Lenders typically require ≥1.20–1.25x. Below 1.0x means the property can't pay its own debt.`,
-      grm: `**GRM (Gross Rent Multiplier)** = Price ÷ Gross Potential Rent. Quick and dirty valuation sanity check — doesn't account for expenses. Lower GRM = more income relative to price.`,
-      'equity multiple': `**Equity Multiple** = Total equity returned ÷ Equity invested. A 1.5x means you doubled your money by 50%. Below 1.0x means you lost money in nominal terms. Target ≥ 1.5x over a 10-year hold.`,
+      irr: `IRR — Internal Rate of Return — is the annualized return that makes the NPV of your entire cash flow stream equal zero. Think of it as the true compounded annual return on your equity, accounting for when money comes in and goes out. Levered IRR is after debt service (your actual return on equity invested). Unlevered measures the asset itself, no debt. For industrial deals in this market, levered IRR below 8% is thin, 10-12% is reasonable, 13%+ you're cooking.`,
+      'cap rate': `Cap rate is just NOI divided by purchase price. It's what the property yields if you paid all cash — no debt. A 6.0% cap on a $3M property means $180K of net income a year. Higher cap generally means more income relative to price, but also often signals more risk, worse location, or older vintage. Industrial in primary markets is trading 5-6.5% right now. Secondary and value-add can push 7-8%.`,
+      noi: `NOI is Net Operating Income — gross rent, less vacancy and credit loss, less all operating expenses (taxes, insurance, management, maintenance). It's the property's pre-debt earnings. Everything in this analysis flows from NOI: cap rate, DSCR, exit value, IRR. Get this number wrong and everything downstream is wrong.`,
+      dscr: `DSCR is the Debt Service Coverage Ratio — NOI divided by annual debt service. A 1.25x DSCR means the property earns $1.25 for every $1.00 you owe the bank. Most lenders want 1.20-1.25x minimum. Below 1.0x means the property literally can't pay its own debt without you writing a check every month.`,
+      grm: `Gross Rent Multiplier — purchase price divided by gross potential rent. A quick back-of-napkin check. GRM of 10x means you'd pay 10 years of gross rent to buy the building. Doesn't account for expenses so it's not a substitute for full underwriting, but useful for quick comparisons.`,
+      'equity multiple': `Equity multiple is total equity returned divided by equity invested. A 1.8x over 10 years means for every dollar you put in, you got $1.80 back. Below 1.0x means you lost money in nominal terms. Target 1.5-2.0x+ for a 10-year industrial hold in this environment.`,
     }
     const match = Object.keys(defs).find(k => t.includes(k))
-    return match ? defs[match] : `Ask me to define cap rate, IRR, NOI, DSCR, GRM, or equity multiple and I'll break it down.`
+    if (match) return defs[match]
+    return `I can explain IRR, cap rate, NOI, DSCR, GRM, or equity multiple. Which one?`
   }
 
   // ── No deals with pricing ──
-  if (allM.length === 0) return `None of your deals have purchase price and building size filled in yet. Add that data and I can give you real analysis.`
+  if (allM.length === 0) return `None of the deals have purchase price and building size filled in yet — I need those to run the numbers. Add that data and I can give you real analysis.`
 
-  // ── Full recommendation ──
+  // ── Full recommendation (no specific deal mentioned) ──
   if (intent === 'recommend' && mentioned.length === 0) {
     const ranked = rankDeals(allM, 'overall')
-    const w = ranked[0], ru = ranked[1]
+    const w = ranked[0], ru = ranked[1], rl = ranked[ranked.length - 1]
     const wm = w.m
-    const lines = [
-      `**Buy ${w.deal.name}.** Here's the full case:`,
-      ``,
-      `It leads the pool on a weighted composite — ${fmt.pct(wm.irrLev)} levered IRR, ${fmt.pct(wm.capRate)} cap rate, ${fmt.mult(wm.equityMult)} equity multiple over a ${w.deal.holdYears || 10}-year hold. ${ru ? `That's meaningfully ahead of ${ru.deal.name} on an overall basis.` : ''}`,
-      ``,
-      `NOI of ${fmt.currency(wm.noi)} on a ${fmt.currency(w.deal.purchasePrice)} acquisition (${fmt.psf(wm.pricePSF)}/SF). ${wm.dscr ? `DSCR of ${wm.dscr.toFixed(2)}x is lender-friendly.` : ''}`,
-    ]
+    const cf = wm.noi - wm.annualDS
+    const payback = cf > 0 ? (wm.equity / cf).toFixed(1) : null
+    const capAdj = wm.capRate >= 0.06 ? 'a solid' : 'a thin-ish'
+    let response = `**${w.deal.name}.** That's my answer, and here's the honest case for it.\n\n`
+    response += `It generates ${fmt.pct(wm.irrLev)} levered IRR on a ${fmt.currency(w.deal.purchasePrice)} buy — ${fmt.pct(wm.capRate)} going-in cap, ${fmt.mult(wm.equityMult)} equity multiple over ${w.deal.holdYears || 10} years. `
+    response += `${capAdj} cap for this market. ${ru ? `${ru.deal.name} is the runner-up, but it trails on both income and total return.` : ''}\n\n`
+    response += `The NOI is ${fmt.currency(wm.noi)}, which is ${fmt.psf(wm.noiPSF)}/SF. ${wm.dscr ? `DSCR at ${wm.dscr.toFixed(2)}x — lenders will be comfortable.` : ''} `
+    if (payback) response += `You recoup your equity in roughly ${payback} years from cash flow alone.\n\n`
     const risks = []
-    if (wm.capRate < 0.055) risks.push(`cap rate is below 5.5% — you're relying on rent growth`)
-    if (wm.dscr && wm.dscr < 1.25) risks.push(`DSCR is tighter than 1.25x`)
-    if (w.deal.yearBuilt && w.deal.yearBuilt < 1990) risks.push(`${w.deal.yearBuilt} vintage — budget for capex`)
-    if (risks.length > 0) lines.push(``, `**Watch:** ${risks.join('; ')}.`)
-    return lines.join('\n')
+    if (wm.capRate < 0.055) risks.push(`the cap rate is thin — you need rent growth to play out`)
+    if (wm.dscr && wm.dscr < 1.25) risks.push(`DSCR is tighter than I'd like`)
+    if (w.deal.yearBuilt && w.deal.yearBuilt < 1990) risks.push(`${w.deal.yearBuilt} vintage means capex risk — get an inspection and budget aggressively`)
+    if (w.deal.tenantCount === 1) risks.push(`single tenant is binary — great until they leave`)
+    if (risks.length > 0) response += `The one thing to keep your eyes on: ${risks.join(', ')}. Not dealbreakers, but go in clear-eyed.`
+    if (rl && rl.deal.id !== w.deal.id) response += `\n\nAnd for what it's worth — I'd steer clear of ${rl.deal.name} right now. The numbers just don't work${rl.m.irrLev && rl.m.irrLev < 0.07 ? ` (${fmt.pct(rl.m.irrLev)} levered IRR is not worth the risk)` : ''}.`
+    return response
   }
 
-  // ── Goal-based ranking ──
-  if ((intent === 'goal_based' || goalId) && mentioned.length === 0) {
+  // ── "Why do you like X" or "explain ranking" with a specific deal mentioned ──
+  if ((intent === 'explain_ranking') && mentioned.length > 0) {
+    const dm = allM.find(x => x.deal.id === mentioned[0].id)
+    if (!dm) return `I don't have full numbers on ${mentioned[0].name} yet — add pricing and I'll give you the full case.`
+    const { deal: d, m } = dm
+    const ranked = rankDeals(allM, 'overall')
+    const rank = ranked.findIndex(r => r.deal.id === d.id) + 1
+    const rankEntry = ranked.find(r => r.deal.id === d.id)
+    const runner = ranked.find(r => r.deal.id !== d.id)
+    const cf = m.noi - m.annualDS
+    const payback = cf > 0 ? (m.equity / cf).toFixed(1) : null
+
+    const strengths = []
+    if (m.capRate >= 0.06) strengths.push(`${fmt.pct(m.capRate)} cap rate clears a real bar for this market`)
+    if (m.irrLev >= 0.08) strengths.push(`${fmt.pct(m.irrLev)} levered IRR is a legitimate return — not just inflation protection`)
+    if (m.equityMult >= 1.5) strengths.push(`${fmt.mult(m.equityMult)} equity multiple over ${d.holdYears || 10} years creates real wealth`)
+    if (m.dscr >= 1.25) strengths.push(`${m.dscr.toFixed(2)}x DSCR means the bank's comfortable and you have cushion`)
+    if (m.breakEven && m.breakEven < 0.75) strengths.push(`${fmt.pct(m.breakEven)} break-even occupancy gives you serious margin of safety on downturns`)
+    if (d.leaseType === 'NNN') strengths.push(`NNN lease means expenses stay with the tenant — clean, predictable cash flow`)
+    if (d.remainingTerm >= 4) strengths.push(`${d.remainingTerm} years of remaining term takes near-term rollover risk off the table`)
+    if (payback && parseFloat(payback) < 12) strengths.push(`equity payback in ~${payback} years — capital efficient`)
+
+    let response = rank === 1
+      ? `Honestly? ${d.name} just checks the most boxes.\n\n`
+      : `${d.name} is ranked #${rank} overall — so it's not the top pick, but here's what I do like about it.\n\n`
+
+    if (strengths.length > 0) {
+      response += strengths.map((s, i) => i === 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s).join('. ') + '.\n\n'
+    }
+
+    response += `On a composite basis its score is ${rankEntry ? rankEntry.score.toFixed(0) : '—'}/100`
+    if (runner) response += ` vs. ${ranked.find(r => r !== rankEntry)?.score.toFixed(0) || '—'}/100 for ${runner.deal.name}`
+    response += `. The gap is real.\n\n`
+
+    const concerns = []
+    if (m.capRate < 0.055) concerns.push(`that cap rate (${fmt.pct(m.capRate)}) is thinner than I'd like — you're paying for the future`)
+    if (m.irrLev && m.irrLev < 0.09) concerns.push(`levered IRR of ${fmt.pct(m.irrLev)} isn't exciting, it's just the best of this bunch`)
+    if (d.yearBuilt && d.yearBuilt < 1990) concerns.push(`${d.yearBuilt} vintage — expect a capex conversation`)
+    if (d.tenantCount === 1) concerns.push(`one tenant means the day they leave, your income goes to zero`)
+    if (concerns.length > 0) response += `That said, I'm not blind to the issues: ${concerns.join('; ')}. Worth going in with eyes open.`
+
+    return response
+  }
+
+  // ── Explain ranking (no deal mentioned — explain the #1 overall) ──
+  if (intent === 'explain_ranking' && mentioned.length === 0) {
+    const gid = goalId || 'overall'
+    const ranked = rankDeals(allM, gid)
+    const w = ranked[0], ru = ranked[1]
+    const wm = w.m
+    const cf = wm.noi - wm.annualDS
+    const payback = cf > 0 ? (wm.equity / cf).toFixed(1) : null
+
+    let response = `${w.deal.name} leads the field, and it's not that close.\n\n`
+    response += `The ${fmt.pct(wm.irrLev)} levered IRR is the headline — ${ru ? `${((wm.irrLev - ru.m.irrLev)*100).toFixed(1)}pp better than ${ru.deal.name}` : 'top of the pool'}. `
+    response += `${fmt.pct(wm.capRate)} going-in cap on a ${fmt.currency(w.deal.purchasePrice)} acquisition. NOI of ${fmt.currency(wm.noi)} — that's ${fmt.psf(wm.noiPSF)}/SF, which is strong. `
+    if (payback) response += `You're recouping equity in about ${payback} years.\n\n`
+    response += `Score: ${w.score.toFixed(0)}/100 vs. ${ru ? ru.score.toFixed(0) + '/100 for ' + ru.deal.name : 'the rest of the field'}. `
+    response += `On the composite of IRR, cap rate, equity multiple, cash-on-cash, and debt coverage — it wins every category that matters.`
+    return response
+  }
+
+  // ── Goal-based ranking (no specific deal) ──
+  if ((intent === 'goal_based' || (goalId && mentioned.length === 0))) {
     const gid = goalId || 'overall'
     const ranked = rankDeals(allM, gid)
     const goal = GOALS.find(g => g.id === gid)
     const w = ranked[0], ru = ranked[1]
-    const lines = [
-      `**For "${goal?.label}" — ${w.deal.name} wins.**`,
-      ``,
-      fmtGoalValue(gid, w.m) + ` — ${ru ? `vs. ${fmtGoalValue(gid, ru.m)} for ${ru.deal.name}` : 'best in the pool'}.`,
-      ``,
-      `Full ranking:`,
-      ...ranked.map((r, i) => `${i === 0 ? '🥇' : `${i + 1}.`} **${r.deal.name}** — ${fmtGoalValue(gid, r.m)} (score: ${r.score.toFixed(0)}/100)`),
-    ]
-    return lines.join('\n')
+
+    const goalPhrases = {
+      irr: `return on equity`, cap_rate: `income yield`, coc: `current cash flow`,
+      equity_mult: `total wealth creation`, min_capital: `capital efficiency`,
+      payback: `speed of capital recovery`, safest: `downside protection`, overall: `overall strength`,
+    }
+    let response = `For **${goal?.label}**, it's ${w.deal.name} — and here's why that makes sense.\n\n`
+    response += `${fmtGoalValue(gid, w.m)}. `
+    if (ru) response += `${ru.deal.name} comes in second at ${fmtGoalValue(gid, ru.m)}.`
+    response += `\n\nFull ranking:\n`
+    ranked.forEach((r, i) => {
+      response += `${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`} **${r.deal.name}** — ${fmtGoalValue(gid, r.m)}\n`
+    })
+    response += `\nIf ${goalPhrases[gid] || 'this'} is your priority, the answer is clear. Want me to dig into why ${w.deal.name} wins or flag any concerns?`
+    return response
   }
 
   // ── Rank all ──
@@ -1070,161 +1158,143 @@ function agentResponse(input, deals, assumptions, history) {
     const gid = goalId || 'overall'
     const ranked = rankDeals(allM, gid)
     const goal = GOALS.find(g => g.id === gid)
-    const lines = [
-      `**Ranked by ${goal?.label || 'Overall'}:**`,
-      '',
-      ...ranked.map((r, i) => {
-        const m = r.m
-        return `${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`} **${r.deal.name}** — IRR ${fmt.pct(m.irrLev)} · Cap ${fmt.pct(m.capRate)} · EM ${fmt.mult(m.equityMult)} · Score ${r.score.toFixed(0)}/100`
-      }),
-    ]
-    return lines.join('\n')
+    let response = `Here's the full stack, ranked by **${goal?.label || 'Overall'}**:\n\n`
+    ranked.forEach((r, i) => {
+      const m = r.m
+      response += `${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`} **${r.deal.name}** — ${fmt.pct(m.irrLev)} IRR · ${fmt.pct(m.capRate)} cap · ${fmt.mult(m.equityMult)} EM · score ${r.score.toFixed(0)}/100\n`
+    })
+    const bottom = ranked[ranked.length - 1]
+    const bmIssues = []
+    if (bottom.m.irrLev && bottom.m.irrLev < 0.07) bmIssues.push(`${fmt.pct(bottom.m.irrLev)} levered IRR`)
+    if (bottom.m.equityMult && bottom.m.equityMult < 1.0) bmIssues.push(`equity multiple below 1.0x`)
+    if (bmIssues.length > 0) response += `\n${bottom.deal.name} at the bottom has real problems — ${bmIssues.join(', ')}. Worth reconsidering.`
+    return response
   }
 
   // ── Compare two deals ──
   if (intent === 'compare' && mentioned.length >= 2) {
     const a = allM.find(dm => dm.deal.id === mentioned[0].id)
     const b = allM.find(dm => dm.deal.id === mentioned[1].id)
-    if (!a || !b) return `I couldn't find metrics for both deals. Make sure they have pricing filled in.`
+    if (!a || !b) return `I've got data on ${mentioned.map(d=>d.name).join(' and ')} but one might be missing pricing — check that both have a purchase price filled in.`
     const am = a.m, bm = b.m
     const wins = { [a.deal.name]: 0, [b.deal.name]: 0 }
-    const rows = [
-      { label: 'Price', aVal: fmt.currency(a.deal.purchasePrice), bVal: fmt.currency(b.deal.purchasePrice), winner: a.deal.purchasePrice < b.deal.purchasePrice ? a.deal.name : b.deal.name },
-      { label: 'Cap Rate', aVal: fmt.pct(am.capRate), bVal: fmt.pct(bm.capRate), winner: (am.capRate || 0) > (bm.capRate || 0) ? a.deal.name : b.deal.name },
-      { label: 'Levered IRR', aVal: fmt.pct(am.irrLev), bVal: fmt.pct(bm.irrLev), winner: (am.irrLev || 0) > (bm.irrLev || 0) ? a.deal.name : b.deal.name },
-      { label: 'NOI', aVal: fmt.currency(am.noi), bVal: fmt.currency(bm.noi), winner: (am.noi || 0) > (bm.noi || 0) ? a.deal.name : b.deal.name },
-      { label: 'Equity Multiple', aVal: fmt.mult(am.equityMult), bVal: fmt.mult(bm.equityMult), winner: (am.equityMult || 0) > (bm.equityMult || 0) ? a.deal.name : b.deal.name },
-      { label: 'DSCR', aVal: am.dscr ? am.dscr.toFixed(2) + 'x' : '—', bVal: bm.dscr ? bm.dscr.toFixed(2) + 'x' : '—', winner: (am.dscr || 0) > (bm.dscr || 0) ? a.deal.name : b.deal.name },
-      { label: 'Equity Required', aVal: fmt.currency(am.equity), bVal: fmt.currency(bm.equity), winner: (am.equity || 0) < (bm.equity || 0) ? a.deal.name : b.deal.name },
-      { label: 'Break-even Occ.', aVal: fmt.pct(am.breakEven), bVal: fmt.pct(bm.breakEven), winner: (am.breakEven || 1) < (bm.breakEven || 1) ? a.deal.name : b.deal.name },
+    const comps = [
+      { label: 'Price', a: fmt.currency(a.deal.purchasePrice), b: fmt.currency(b.deal.purchasePrice), winner: a.deal.purchasePrice < b.deal.purchasePrice ? a.deal.name : b.deal.name, note: 'smaller check' },
+      { label: 'Cap Rate', a: fmt.pct(am.capRate), b: fmt.pct(bm.capRate), winner: (am.capRate||0) > (bm.capRate||0) ? a.deal.name : b.deal.name, note: 'more income yield' },
+      { label: 'Levered IRR', a: fmt.pct(am.irrLev), b: fmt.pct(bm.irrLev), winner: (am.irrLev||0) > (bm.irrLev||0) ? a.deal.name : b.deal.name, note: 'better total return' },
+      { label: 'NOI', a: fmt.currency(am.noi), b: fmt.currency(bm.noi), winner: (am.noi||0) > (bm.noi||0) ? a.deal.name : b.deal.name, note: 'more income' },
+      { label: 'Equity Multiple', a: fmt.mult(am.equityMult), b: fmt.mult(bm.equityMult), winner: (am.equityMult||0) > (bm.equityMult||0) ? a.deal.name : b.deal.name, note: 'more wealth created' },
+      { label: 'DSCR', a: am.dscr ? am.dscr.toFixed(2)+'x' : '—', b: bm.dscr ? bm.dscr.toFixed(2)+'x' : '—', winner: (am.dscr||0) > (bm.dscr||0) ? a.deal.name : b.deal.name, note: 'safer debt position' },
+      { label: 'Equity Required', a: fmt.currency(am.equity), b: fmt.currency(bm.equity), winner: (am.equity||0) < (bm.equity||0) ? a.deal.name : b.deal.name, note: 'less capital needed' },
     ]
-    rows.forEach(r => { if (r.winner) wins[r.winner] = (wins[r.winner] || 0) + 1 })
-    const overallWinner = wins[a.deal.name] >= wins[b.deal.name] ? a.deal.name : b.deal.name
-    const lines = [
-      `**${a.deal.name} vs. ${b.deal.name}**`,
-      '',
-      ...rows.map(r => `**${r.label}:** ${a.deal.name} ${r.aVal} · ${b.deal.name} ${r.bVal}${r.winner ? ` → ${r.winner} wins` : ''}`),
-      '',
-      `**Bottom line:** ${overallWinner} wins ${wins[overallWinner]} of ${rows.length} categories. ${overallWinner === a.deal.name ? a.deal.name : b.deal.name} is the stronger deal on balance.`,
-    ]
-    return lines.join('\n')
-  }
+    comps.forEach(c => { if (c.winner) wins[c.winner] = (wins[c.winner] || 0) + 1 })
+    const winner = wins[a.deal.name] >= wins[b.deal.name] ? a : b
+    const loser = winner === a ? b : a
 
-  // ── Explain ranking ──
-  if (intent === 'explain_ranking') {
-    const gid = goalId || 'overall'
-    const ranked = rankDeals(allM, gid)
-    const w = ranked[0], ru = ranked[1]
-    const wm = w.m
-    const cf = wm.noi - wm.annualDS
-    const payback = cf > 0 ? (wm.equity / cf).toFixed(1) : null
-    const lines = [
-      `**Why ${w.deal.name} is #1 (${GOALS.find(g => g.id === gid)?.label || 'Overall'})**`,
-      ``,
-      `It leads because it scores highest on a weighted combination of the key return metrics:`,
-      ``,
-      `· **Levered IRR:** ${fmt.pct(wm.irrLev)}${ru ? ` vs. ${fmt.pct(ru.m.irrLev)} for ${ru.deal.name}` : ''}`,
-      `· **Cap Rate:** ${fmt.pct(wm.capRate)} — ${wm.capRate >= 0.06 ? 'above the 6% threshold, solid income yield' : 'slightly thin but competitive'}`,
-      `· **Equity Multiple:** ${fmt.mult(wm.equityMult)} over ${w.deal.holdYears || 10} years`,
-      `· **NOI:** ${fmt.currency(wm.noi)} (${fmt.psf(wm.noiPSF)}/SF)`,
-      `· **DSCR:** ${wm.dscr ? wm.dscr.toFixed(2) + 'x' : '—'}`,
-      payback ? `· **Payback:** ~${payback} years to recoup equity from cash flow` : '',
-      ``,
-      `The gap matters too — it isn't just barely winning. Its composite score is ${w.score.toFixed(0)}/100 vs. ${ru ? ru.score.toFixed(0) + '/100 for ' + ru.deal.name : 'the rest of the field'}.`,
-    ].filter(Boolean)
-
-    const risks = []
-    if (wm.capRate < 0.055) risks.push(`thin cap rate (${fmt.pct(wm.capRate)}) — you're betting on rent growth`)
-    if (wm.dscr && wm.dscr < 1.25) risks.push(`DSCR of ${wm.dscr.toFixed(2)}x is below lender comfort`)
-    if (w.deal.yearBuilt && w.deal.yearBuilt < 1990) risks.push(`${w.deal.yearBuilt} vintage — deferred maintenance risk`)
-    if (w.deal.leaseType === 'Vacant') risks.push(`currently vacant — you're underwriting lease-up`)
-    if (risks.length > 0) lines.push('', `**But watch:** ${risks.join('; ')}.`)
-    return lines.join('\n')
+    let response = `**${a.deal.name} vs. ${b.deal.name}** — here's the honest head-to-head.\n\n`
+    comps.forEach(c => { response += `**${c.label}:** ${a.deal.name} ${c.a}  vs.  ${b.deal.name} ${c.b}${c.winner ? ` — ${c.winner} (${c.note})` : ''}\n` })
+    response += `\n**My read:** ${winner.deal.name} wins ${wins[winner.deal.name]} of ${comps.length} categories. `
+    response += `The ${fmt.pct((winner.m.irrLev||0) - (loser.m.irrLev||0))} IRR gap and ${fmt.pct((winner.m.capRate||0) - (loser.m.capRate||0))} cap rate difference are meaningful, not noise. `
+    response += `Unless you have a specific reason to prefer ${loser.deal.name} — location bias, relationship with the broker, something in the lease — ${winner.deal.name} is the cleaner call.`
+    return response
   }
 
   // ── Risks for a specific deal ──
-  if (intent === 'risks' && mentioned.length > 0) {
-    const dm = allM.find(x => x.deal.id === mentioned[0].id)
-    if (!dm) return `I don't have metrics for ${mentioned[0].name} — check that pricing is filled in.`
-    const { deal: d, m } = dm
-    const flags = []
-    if (!d.purchasePrice) flags.push(`No purchase price — can't underwrite returns`)
-    if (m.capRate && m.capRate < 0.05) flags.push(`Cap rate of ${fmt.pct(m.capRate)} is thin — priced for near-perfection on rent growth`)
-    if (m.irrLev && m.irrLev < 0.08) flags.push(`Levered IRR of ${fmt.pct(m.irrLev)} is below a healthy 8% threshold`)
-    if (m.equityMult && m.equityMult < 1.2) flags.push(`Equity multiple of ${fmt.mult(m.equityMult)} is dangerously close to losing money in real terms`)
-    if (m.dscr && m.dscr < 1.25) flags.push(`DSCR of ${m.dscr.toFixed(2)}x is tight — lenders will push back`)
-    if (m.dscr && m.dscr < 1.0) flags.push(`DSCR below 1.0x — the property can't service its own debt from operations`)
-    if (m.breakEven && m.breakEven > 0.85) flags.push(`${fmt.pct(m.breakEven)} break-even occupancy leaves almost no cushion`)
-    if (d.yearBuilt && d.yearBuilt < 1985) flags.push(`Built ${d.yearBuilt} — older vintage means environmental risk, lower ceiling heights, and potential capex surprises`)
-    if (d.leaseType === 'Vacant') flags.push(`Currently vacant — you're buying on a pro forma, not in-place income`)
-    if (d.leaseType === 'Modified Gross') flags.push(`MG lease — landlord absorbs expense risk. Validate actual expense history`)
-    if (d.tenantCount === 1) flags.push(`Single tenant — 100% vacancy risk on lease expiration`)
-    if (!d.sprinklered || d.sprinklered === 'No') flags.push(`Not sprinklered — limits tenant pool and may affect insurance`)
-
-    if (flags.length === 0) return `**${d.name} looks reasonably clean.** No major red flags based on the data entered. Biggest unknown is whatever's missing — double-check operating expense details and lease terms.`
-
-    return [`**Red flags for ${d.name}:**`, '', ...flags.map(f => `⚠ ${f}`)].join('\n')
-  }
-
-  // ── Deep dive on a specific deal ──
-  if (mentioned.length > 0) {
+  if ((intent === 'risks') && mentioned.length > 0) {
     const dm = allM.find(x => x.deal.id === mentioned[0].id)
     if (!dm) {
       const d = mentioned[0]
-      return `**${d.name}** — ${d.address}, ${d.city}. No financial data yet (missing purchase price or SF). Fill those in and I can give you the full picture.`
+      return `${d.name} doesn't have full financial data yet, so I can't underwrite the risk properly. Add purchase price and we can have a real conversation.`
     }
     const { deal: d, m } = dm
     const ranked = rankDeals(allM, 'overall')
     const rank = ranked.findIndex(r => r.deal.id === d.id) + 1
+    const flags = []
+    if (m.capRate && m.capRate < 0.05) flags.push(`At ${fmt.pct(m.capRate)}, the cap rate is priced for perfection. One missed rent escalation and the story starts falling apart.`)
+    if (m.irrLev && m.irrLev < 0.08) flags.push(`${fmt.pct(m.irrLev)} levered IRR is below the threshold I'd want. You're taking real estate risk for a near-bond return.`)
+    if (m.equityMult && m.equityMult < 1.2) flags.push(`Equity multiple of ${fmt.mult(m.equityMult)} is dangerously close to breaking even — in nominal terms, before inflation.`)
+    if (m.dscr && m.dscr < 1.0) flags.push(`DSCR is below 1.0x — the property literally can't service its own debt. You'd be writing checks every month.`)
+    else if (m.dscr && m.dscr < 1.25) flags.push(`DSCR of ${m.dscr.toFixed(2)}x — technically serviceable, but lenders will be nervous and so should you.`)
+    if (m.breakEven && m.breakEven > 0.85) flags.push(`${fmt.pct(m.breakEven)} break-even occupancy. One vacancy and you're in trouble. That's not a cushion, that's a cliff.`)
+    if (d.yearBuilt && d.yearBuilt < 1985) flags.push(`Built ${d.yearBuilt}. That's 40+ years of deferred maintenance potential. Get a serious inspection and budget $10-15/SF capex before you close.`)
+    if (d.leaseType === 'Vacant') flags.push(`It's vacant. You're buying on a pro forma, not in-place income. The whole investment thesis depends on leasing — what's the current market absorption for this submarket?`)
+    if (d.leaseType === 'Modified Gross') flags.push(`Modified Gross lease means you're absorbing expense risk. Utilities, maintenance, taxes could eat into NOI if you underestimated them.`)
+    if (d.tenantCount === 1) flags.push(`Single tenant. The day they don't renew, your income goes to zero and your exit cap compresses immediately.`)
+    if (!d.sprinklered || d.sprinklered === 'No') flags.push(`No sprinklers. That narrows your tenant pool significantly — food, pharma, and most logistics tenants won't touch it without fire suppression.`)
+
+    if (flags.length === 0) {
+      return `Honestly, ${d.name} looks reasonably clean based on what's entered. It's ranked #${rank} overall, so it's not the top pick, but I don't see any outright dealbreakers. The bigger unknowns are what's not filled in — expense history, lease details, inspection findings. What's your specific concern?`
+    }
+
+    let response = `Here's what worries me about ${d.name}:\n\n`
+    flags.forEach((f, i) => { response += `${i+1}. ${f}\n\n` })
+    response += `It's ranked #${rank} of ${allM.length} in the pool. `
+    if (rank === allM.length) response += `Honestly, this is my last choice right now.`
+    else if (rank > allM.length / 2) response += `There are better options in your pipeline.`
+    return response
+  }
+
+  // ── Deep dive / general deal question ──
+  if (mentioned.length > 0) {
+    const dm = allM.find(x => x.deal.id === mentioned[0].id)
+    if (!dm) {
+      const d = mentioned[0]
+      return `${d.name} is in the pipeline${d.address ? ` at ${d.address}` : ''}, but I don't have financial data on it yet — no purchase price or building size entered. Once those are in, I can give you the full picture.`
+    }
+    const { deal: d, m } = dm
+    const ranked = rankDeals(allM, 'overall')
+    const rank = ranked.findIndex(r => r.deal.id === d.id) + 1
+    const rankEntry = ranked.find(r => r.deal.id === d.id)
     const cf = m.noi - m.annualDS
     const payback = cf > 0 ? (m.equity / cf).toFixed(1) : null
 
-    const lines = [
-      `**${d.name}** — ${d.address}, ${d.city}`,
-      `${d.buildingSize?.toLocaleString()} SF · ${d.propertyType} · Built ${d.yearBuilt || 'N/A'} · ${d.leaseType || '—'} lease`,
-      ``,
-      `**Returns**`,
-      `· Cap Rate: ${fmt.pct(m.capRate)}`,
-      `· Levered IRR: ${fmt.pct(m.irrLev)}`,
-      `· Unlevered IRR: ${fmt.pct(m.irrUnlev)}`,
-      `· Cash-on-Cash: ${fmt.pct(m.coc)}`,
-      `· Equity Multiple: ${fmt.mult(m.equityMult)} over ${d.holdYears || 10} years`,
-      payback ? `· Payback Period: ~${payback} years` : '',
-      ``,
-      `**Income & Debt**`,
-      `· NOI: ${fmt.currency(m.noi)} (${fmt.psf(m.noiPSF)}/SF)`,
-      `· DSCR: ${m.dscr ? m.dscr.toFixed(2) + 'x' : '—'}`,
-      `· Break-even Occupancy: ${fmt.pct(m.breakEven)}`,
-      ``,
-      `**Capital Stack**`,
-      `· Purchase Price: ${fmt.currency(d.purchasePrice)} (${fmt.psf(m.pricePSF)}/SF)`,
-      `· Equity Required: ${fmt.currency(m.equity)}`,
-      `· Loan Amount: ${fmt.currency(m.loanAmt)} at ${fmt.pct(m.ltv_actual)} LTV`,
-      `· Exit Value (${d.holdYears || 10}yr): ${fmt.currency(m.exitValue)}`,
-      ``,
-      `**Overall rank in pool: #${rank} of ${allM.length}**`,
-    ].filter(Boolean)
+    let response = `**${d.name}** — ${d.address}, ${d.city}. ${(d.buildingSize||0).toLocaleString()} SF of ${d.propertyType?.toLowerCase() || 'industrial'}`
+    if (d.yearBuilt) response += `, built ${d.yearBuilt}`
+    response += `. Ranked **#${rank} of ${allM.length}** in your pool (score: ${rankEntry?.score.toFixed(0)}/100).\n\n`
 
-    if (d.brokerNotes) lines.push('', `**Notes:** ${d.brokerNotes}`)
-    return lines.join('\n')
+    response += `**The numbers:** ${fmt.pct(m.capRate)} cap rate, ${fmt.pct(m.irrLev)} levered IRR, ${fmt.mult(m.equityMult)} equity multiple over ${d.holdYears||10} years. `
+    response += `NOI is ${fmt.currency(m.noi)} (${fmt.psf(m.noiPSF)}/SF). `
+    if (m.dscr) response += `DSCR of ${m.dscr.toFixed(2)}x. `
+    if (payback) response += `You recoup equity in ~${payback} years.\n\n`
+
+    response += `**Capital:** ${fmt.currency(d.purchasePrice)} purchase price (${fmt.psf(m.pricePSF)}/SF), ${fmt.currency(m.equity)} equity required. `
+    response += `Exit value after ${d.holdYears||10} years: ${fmt.currency(m.exitValue)}.\n\n`
+
+    const strengths = [], concerns = []
+    if (m.capRate >= 0.06) strengths.push(`solid cap rate`)
+    if (m.irrLev >= 0.09) strengths.push(`strong levered return`)
+    if (d.leaseType === 'NNN') strengths.push(`clean NNN lease structure`)
+    if (d.remainingTerm >= 4) strengths.push(`${d.remainingTerm} years of remaining term`)
+    if (m.dscr >= 1.25) strengths.push(`comfortable debt coverage`)
+    if (m.capRate < 0.055) concerns.push(`thin cap rate`)
+    if (m.irrLev && m.irrLev < 0.08) concerns.push(`below-average IRR`)
+    if (d.yearBuilt && d.yearBuilt < 1990) concerns.push(`older vintage`)
+    if (d.leaseType === 'Vacant') concerns.push(`currently vacant`)
+
+    if (strengths.length > 0) response += `**Strengths:** ${strengths.join(', ')}.\n`
+    if (concerns.length > 0) response += `**Concerns:** ${concerns.join(', ')}.\n`
+    if (d.brokerNotes) response += `\n${d.brokerNotes}`
+
+    response += `\n\nWhat do you want to dig into?`
+    return response
   }
 
-  // ── Fallback ──
-  const suggestions = [
-    `Try: "Why is ${allM[0]?.deal.name} ranked #1?"`,
-    `Or: "Compare ${allM[0]?.deal.name} and ${allM[1]?.deal.name}"`,
-    `Or: "What are the risks with ${allM[allM.length - 1]?.deal.name}?"`,
-    `Or: "Which deal is best for lowest capital?"`,
-    `Or: "What is IRR?"`,
-  ]
-  return `I can help with deal analysis, comparisons, risk flags, ranking explanations, and metric definitions.\n\n${suggestions.filter(Boolean).join('\n')}`
+  // ── Smart fallback — always try to be useful ──
+  const ranked = rankDeals(allM, 'overall')
+  const top = ranked[0], bottom = ranked[ranked.length - 1]
+  return `I know your pipeline cold. Right now ${top?.deal.name} is leading the field overall and ${bottom?.deal.name} is the one I'd be most cautious about. \n\nAsk me anything — compare two deals, explain a metric, pressure-test a specific property, or just ask "what should I buy?". I'll give you a straight answer.`
 }
 
 function AgentView({ deals, assumptions }) {
+  const allM = deals.map(d => ({ deal: d, m: computeMetrics(d, assumptions) }))
+    .filter(dm => dm.deal.purchasePrice > 0 && dm.deal.buildingSize > 0)
+  const ranked = rankDeals(allM, 'overall')
+  const top = ranked[0]
+
   const [messages, setMessages] = useState([
     {
       role: 'agent',
-      text: `Hey — I'm your J3 deal advisor. I have full context on all ${deals.length} properties in your pipeline.\n\nAsk me anything:\n· "Why is Monarch Park Place #1 overall?"\n· "Compare Beatty Drive and Via El Centro"\n· "What are the risks with 27th St?"\n· "Which deal needs the least capital?"\n· "What should I buy?"`
+      text: `Hey, I'm Jameson — your deal advisor on this pipeline. I've run the numbers on all ${allM.length} properties with pricing data.\n\n${top ? `Quick take: **${top.deal.name}** is leading the field right now on overall composite score. But ask me anything — I'll give you a straight answer, not a spreadsheet dump.` : `Add purchase prices to your deals and I'll have a full take ready for you.`}\n\nWhat do you want to know?`
     }
   ])
   const [input, setInput] = useState('')
@@ -1288,7 +1358,7 @@ function AgentView({ deals, assumptions }) {
         {messages.map((msg, i) => (
           <div key={i} style={{ display: 'flex', gap: 10, justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
             {msg.role === 'agent' && (
-              <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'linear-gradient(135deg,#4f8ef7,#7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0, marginTop: 2 }}>J</div>
+              <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'linear-gradient(135deg,#4f8ef7,#7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, flexShrink: 0, marginTop: 2, letterSpacing: -0.5 }}>JM</div>
             )}
             <div style={{
               maxWidth: '82%',
