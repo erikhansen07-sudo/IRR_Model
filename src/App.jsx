@@ -594,6 +594,335 @@ function MetricsPanel({ deal, assumptions }) {
   )
 }
 
+// ─── Advisor Engine ────────────────────────────────────────────────────────
+
+const GOALS = [
+  {
+    id: 'overall', label: 'Best Overall', icon: '⚡',
+    desc: 'Weighted composite across return, income, safety, and efficiency',
+  },
+  { id: 'irr',          label: 'Highest IRR',             icon: '📈', desc: 'Maximize total return on equity over hold period' },
+  { id: 'cap_rate',     label: 'Best Cap Rate',            icon: '🏢', desc: 'Maximum income yield on purchase price' },
+  { id: 'coc',          label: 'Best Cash-on-Cash',        icon: '💵', desc: 'Highest current-year cash return on equity invested' },
+  { id: 'equity_mult',  label: 'Best Equity Multiple',     icon: '✖', desc: 'Most total dollars returned per dollar invested' },
+  { id: 'min_capital',  label: 'Lowest Capital Required',  icon: '💰', desc: 'Smallest equity check to get in the door' },
+  { id: 'payback',      label: 'Fastest Payback',          icon: '⏱', desc: 'Fewest years to recoup your equity from cash flow' },
+  { id: 'safest',       label: 'Safest Investment',        icon: '🛡', desc: 'Best debt coverage, lowest break-even, highest margin of safety' },
+]
+
+function normalize(values, higherIsBetter) {
+  const valid = values.filter(v => v != null && isFinite(v))
+  if (valid.length === 0) return values.map(() => 0)
+  const min = Math.min(...valid), max = Math.max(...valid)
+  return values.map(v => {
+    if (v == null || !isFinite(v)) return 0
+    if (max === min) return 50
+    const n = (v - min) / (max - min) * 100
+    return higherIsBetter ? n : 100 - n
+  })
+}
+
+function rankDeals(dealMetrics, goalId) {
+  if (dealMetrics.length === 0) return []
+
+  const composite = (subMetrics) => {
+    const scores = dealMetrics.map(() => 0)
+    for (const sm of subMetrics) {
+      const raws = dealMetrics.map(dm => sm.fn(dm.m))
+      const normed = normalize(raws, sm.higher)
+      normed.forEach((n, i) => { scores[i] += n * sm.w })
+    }
+    const maxS = Math.max(...scores) || 1
+    return dealMetrics
+      .map((dm, i) => ({ ...dm, score: scores[i] / maxS * 100 }))
+      .sort((a, b) => b.score - a.score)
+  }
+
+  if (goalId === 'overall') {
+    return composite([
+      { fn: m => m.irrLev,      w: 0.25, higher: true },
+      { fn: m => m.capRate,     w: 0.20, higher: true },
+      { fn: m => m.equityMult,  w: 0.20, higher: true },
+      { fn: m => m.coc,         w: 0.20, higher: true },
+      { fn: m => m.dscr,        w: 0.15, higher: true },
+    ])
+  }
+
+  if (goalId === 'safest') {
+    return composite([
+      { fn: m => m.dscr,                                         w: 0.40, higher: true  },
+      { fn: m => m.breakEven != null ? 1 - m.breakEven : null,   w: 0.40, higher: true  },
+      { fn: m => m.capRate,                                      w: 0.20, higher: true  },
+    ])
+  }
+
+  const rawFn = {
+    irr:         m => m.irrLev,
+    cap_rate:    m => m.capRate,
+    coc:         m => m.coc,
+    equity_mult: m => m.equityMult,
+    min_capital: m => m.equity,
+    payback:     m => { const cf = m.noi - m.annualDS; return cf > 0 ? m.equity / cf : null },
+  }[goalId]
+
+  const higherBetter = !['min_capital', 'payback'].includes(goalId)
+  const raws = dealMetrics.map(dm => rawFn(dm.m))
+  const normed = normalize(raws, higherBetter)
+  return dealMetrics
+    .map((dm, i) => ({ ...dm, score: normed[i], rawValue: raws[i] }))
+    .sort((a, b) => b.score - a.score)
+}
+
+function fmtGoalValue(goalId, m) {
+  const cf = m.noi - m.annualDS
+  const payback = cf > 0 ? m.equity / cf : null
+  return {
+    overall:      `${fmt.pct(m.irrLev)} IRR · ${fmt.pct(m.capRate)} cap`,
+    irr:          fmt.pct(m.irrLev),
+    cap_rate:     fmt.pct(m.capRate),
+    coc:          fmt.pct(m.coc),
+    equity_mult:  fmt.mult(m.equityMult),
+    min_capital:  fmt.currency(m.equity),
+    payback:      payback ? payback.toFixed(1) + ' yrs' : '—',
+    safest:       m.dscr ? m.dscr.toFixed(2) + 'x DSCR · ' + fmt.pct(m.breakEven) + ' BE' : '—',
+  }[goalId]
+}
+
+function generateNarrative(ranked, goalId, goal) {
+  if (!ranked.length) return null
+  const w = ranked[0], l = ranked[ranked.length - 1]
+  const wm = w.m, wd = w.deal
+  const runner = ranked[1]
+
+  // ── Verdict ──
+  const verdict = `${wd.name}.`
+
+  // ── Primary reason (goal-specific) ──
+  const cf = wm.noi - wm.annualDS
+  const paybackYrs = cf > 0 ? (wm.equity / cf).toFixed(1) : null
+  const margins = {
+    irr:         runner ? `${((wm.irrLev - runner.m.irrLev) * 100).toFixed(1)}pp ahead of ${runner.deal.name}` : '',
+    cap_rate:    runner ? `${((wm.capRate - runner.m.capRate) * 100).toFixed(1)}pp above the next deal` : '',
+    coc:         runner ? `${((wm.coc - runner.m.coc) * 100).toFixed(1)}pp better cash-on-cash than ${runner.deal.name}` : '',
+    equity_mult: runner ? `${(wm.equityMult - runner.m.equityMult).toFixed(2)}x more equity created than ${runner.deal.name}` : '',
+    min_capital: runner ? fmt.currency(runner.m.equity - wm.equity) + ' cheaper equity check than the next deal' : '',
+    payback:     paybackYrs ? `${paybackYrs}-year payback on your equity` : '',
+    safest:      wm.dscr ? `${wm.dscr.toFixed(2)}x DSCR with a ${fmt.pct(wm.breakEven)} break-even — the widest safety margin in the pool` : '',
+    overall:     runner ? `leads the field on a weighted composite of IRR, cap rate, equity multiple, cash-on-cash, and debt coverage` : '',
+  }
+
+  const primaryLines = {
+    irr:         `At ${fmt.pct(wm.irrLev)} levered IRR, it's the strongest total return in your pipeline${runner ? ` — ${margins.irr}` : ''}.`,
+    cap_rate:    `${fmt.pct(wm.capRate)} going-in cap rate is the best income yield in the pool${runner ? `, ${margins.cap_rate}` : ''}.`,
+    coc:         `${fmt.pct(wm.coc)} cash-on-cash means this deal starts paying you back faster than anything else you're looking at${runner ? ` — ${margins.coc}` : ''}.`,
+    equity_mult: `${fmt.mult(wm.equityMult)} equity multiple over a ${wd.holdYears || 10}-year hold — ${runner ? margins.equity_mult + '.' : 'best total wealth creation in the pool.'}`,
+    min_capital: `Requires only ${fmt.currency(wm.equity)} in equity — ${runner ? margins.min_capital + '.' : 'the smallest check in your pipeline.'}`,
+    payback:     paybackYrs ? `${margins.payback}. Capital efficiency wins here.` : `Fastest return of capital in the pool.`,
+    safest:      `${margins.safest}. If protecting downside is the priority, this is the answer.`,
+    overall:     `It ${margins.overall}. No single metric is the best, but the composite picture is the most convincing.`,
+  }[goalId]
+
+  // ── Supporting context ──
+  const supportLines = []
+  if (wm.noi > 0) supportLines.push(`NOI of ${fmt.currency(wm.noi)} on a ${fmt.currency(wd.purchasePrice)} acquisition — ${fmt.psf(wm.noiPSF)}/SF.`)
+  if (wm.dscr && wm.dscr >= 1.0) supportLines.push(`Debt coverage at ${wm.dscr.toFixed(2)}x — lenders will be comfortable here.`)
+  if (wd.remainingTerm && wd.leaseType) supportLines.push(`${wd.remainingTerm}-year remaining term on a ${wd.leaseType} lease de-risks near-term income.`)
+  if (wm.breakEven && wm.breakEven < 0.80) supportLines.push(`Break-even occupancy of ${fmt.pct(wm.breakEven)} gives you meaningful cushion before you're underwater.`)
+
+  // ── Watch outs for the winner ──
+  const watch = []
+  if (!wm.dscr || wm.dscr < 1.25) watch.push(`DSCR of ${wm.dscr ? wm.dscr.toFixed(2) + 'x' : '—'} is below 1.25x — tighter than lenders prefer. Either negotiate better terms or bring more equity.`)
+  if (wm.capRate && wm.capRate < 0.055) watch.push(`${fmt.pct(wm.capRate)} cap rate is thin. You're underwriting future rent growth to make this work — if escalations don't materialize, returns compress quickly.`)
+  if (wm.breakEven && wm.breakEven > 0.80) watch.push(`${fmt.pct(wm.breakEven)} break-even occupancy leaves limited buffer. One tenant departure changes the math materially.`)
+  if (wm.irrLev && wm.irrLev < 0.10) watch.push(`Sub-10% levered IRR means you're mostly paying for stability, not growth. Make sure the income durability justifies the multiple.`)
+  if (wd.yearBuilt && wd.yearBuilt < 1990) watch.push(`Built ${wd.yearBuilt} — budget aggressively for deferred maintenance and capex surprises.`)
+
+  // ── Pass on ──
+  const passOn = []
+  for (const r of ranked.slice(1)) {
+    const rm = r.m
+    const flags = []
+    if (rm.equityMult && rm.equityMult < 1.0) flags.push(`equity multiple below 1.0x means you're likely losing money in real terms`)
+    if (rm.irrLev && rm.irrLev < 0.06) flags.push(`sub-6% levered IRR`)
+    if (rm.dscr && rm.dscr < 1.0) flags.push(`DSCR below 1.0x — can't service debt from operations`)
+    if (rm.capRate && rm.capRate < 0.045) flags.push(`cap rate under 4.5% — priced for perfection`)
+    if (flags.length > 0) passOn.push({ name: r.deal.name, flags })
+  }
+
+  return { verdict, primaryLine: primaryLines, support: supportLines, watch, passOn }
+}
+
+function AdvisorView({ deals, assumptions }) {
+  const [goalId, setGoalId] = useState('overall')
+  const goal = GOALS.find(g => g.id === goalId)
+
+  const activeDealMetrics = deals
+    .filter(d => d.purchasePrice > 0 && d.buildingSize > 0)
+    .map(d => ({ deal: d, m: computeMetrics(d, assumptions) }))
+
+  const ranked = rankDeals(activeDealMetrics, goalId)
+  const narrative = ranked.length >= 1 ? generateNarrative(ranked, goalId, goal) : null
+  const winner = ranked[0]
+
+  if (deals.length === 0) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: '#4a5568' }}>
+        Add deals to get an advisor recommendation.
+      </div>
+    )
+  }
+
+  if (activeDealMetrics.length === 0) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: '#4a5568' }}>
+        Fill in purchase price and building size on at least one deal.
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ maxWidth: 900 }}>
+      {/* Goal selector */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
+        <div style={{ color: '#718096', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>OPTIMIZE FOR</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {GOALS.map(g => (
+            <button
+              key={g.id}
+              onClick={() => setGoalId(g.id)}
+              style={{
+                padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 500,
+                background: goalId === g.id ? '#4f8ef7' : '#1e2535',
+                color: goalId === g.id ? '#fff' : '#94a3b8',
+                border: goalId === g.id ? '1px solid #4f8ef7' : '1px solid #2d3748',
+              }}
+            >
+              {g.icon} {g.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ color: '#4a5568', fontSize: 11, marginBottom: 24 }}>{goal.desc}</div>
+
+      {narrative && winner && (
+        <>
+          {/* ── THE CALL ── */}
+          <div style={{
+            background: 'linear-gradient(135deg, #0d1f3c 0%, #0f2744 100%)',
+            border: '1px solid #1e3a6e', borderRadius: 12, padding: 24, marginBottom: 20,
+            position: 'relative', overflow: 'hidden'
+          }}>
+            <div style={{
+              position: 'absolute', top: 0, left: 0, right: 0, height: 3,
+              background: 'linear-gradient(90deg, #4f8ef7, #7c3aed)'
+            }} />
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2, color: '#4f8ef7', marginBottom: 10, textTransform: 'uppercase' }}>
+              The Call
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 28, fontWeight: 800, color: '#fff', letterSpacing: -0.5 }}>
+                {narrative.verdict}
+              </div>
+              <div style={{ fontSize: 13, color: '#48bb78', fontWeight: 600 }}>
+                Score: {winner.score.toFixed(0)}/100
+              </div>
+            </div>
+            <div style={{ fontSize: 14, color: '#cbd5e0', lineHeight: 1.7, marginBottom: 14 }}>
+              {narrative.primaryLine}
+            </div>
+            {narrative.support.length > 0 && (
+              <div style={{ fontSize: 12, color: '#718096', lineHeight: 1.7 }}>
+                {narrative.support.join(' ')}
+              </div>
+            )}
+            {/* Key metrics strip */}
+            <div style={{ display: 'flex', gap: 20, marginTop: 18, flexWrap: 'wrap' }}>
+              {[
+                { label: 'Levered IRR', val: fmt.pct(winner.m.irrLev) },
+                { label: 'Cap Rate', val: fmt.pct(winner.m.capRate) },
+                { label: 'Equity Multiple', val: fmt.mult(winner.m.equityMult) },
+                { label: 'NOI', val: fmt.currency(winner.m.noi) },
+                { label: 'Equity Required', val: fmt.currency(winner.m.equity) },
+                { label: 'DSCR', val: winner.m.dscr ? winner.m.dscr.toFixed(2) + 'x' : '—' },
+              ].map(({ label, val }) => (
+                <div key={label} style={{ borderLeft: '2px solid #1e3a6e', paddingLeft: 12 }}>
+                  <div style={{ fontSize: 10, color: '#4a5568', marginBottom: 2 }}>{label}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0' }}>{val}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── WATCH OUT ── */}
+          {narrative.watch.length > 0 && (
+            <div style={{ background: '#1a1200', border: '1px solid #3d2e00', borderRadius: 10, padding: 16, marginBottom: 20 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2, color: '#ecc94b', marginBottom: 10, textTransform: 'uppercase' }}>
+                ⚠ Watch Out
+              </div>
+              {narrative.watch.map((w, i) => (
+                <div key={i} style={{ fontSize: 12, color: '#d4a017', lineHeight: 1.6, marginBottom: i < narrative.watch.length - 1 ? 6 : 0 }}>
+                  · {w}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── PASS ON ── */}
+          {narrative.passOn.length > 0 && (
+            <div style={{ background: '#1a0d0d', border: '1px solid #3d1515', borderRadius: 10, padding: 16, marginBottom: 20 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2, color: '#fc8181', marginBottom: 10, textTransform: 'uppercase' }}>
+                🚫 Red Flags
+              </div>
+              {narrative.passOn.map(({ name, flags }, i) => (
+                <div key={i} style={{ fontSize: 12, color: '#fc8181', lineHeight: 1.6, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600 }}>{name}:</span> {flags.join('; ')}.
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── RANKED TABLE ── */}
+      <div style={{ ...S.sectionCard, marginBottom: 0 }}>
+        <div style={S.sectionTitle}>All Deals Ranked</div>
+        {ranked.map((r, i) => {
+          const isWinner = i === 0
+          const barColor = isWinner ? '#4f8ef7' : i === 1 ? '#7c3aed' : '#2d3748'
+          return (
+            <div key={r.deal.id} style={{
+              display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0',
+              borderBottom: '1px solid #1a2133', opacity: r.score === 0 ? 0.4 : 1
+            }}>
+              <div style={{ width: 24, fontWeight: 700, color: isWinner ? '#4f8ef7' : '#4a5568', textAlign: 'center', fontSize: 14 }}>
+                {isWinner ? '🥇' : `#${i + 1}`}
+              </div>
+              <div style={{ width: 140, flexShrink: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: isWinner ? '#fff' : '#94a3b8' }}>{r.deal.name}</div>
+                <div style={{ fontSize: 10, color: '#4a5568' }}>{r.deal.city || '—'}</div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ flex: 1, background: '#1e2535', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+                    <div style={{ width: `${r.score}%`, background: barColor, height: '100%', borderRadius: 4, transition: 'width 0.3s' }} />
+                  </div>
+                  <div style={{ width: 36, textAlign: 'right', fontSize: 12, fontWeight: 700, color: isWinner ? '#4f8ef7' : '#718096' }}>
+                    {r.score.toFixed(0)}
+                  </div>
+                </div>
+              </div>
+              <div style={{ width: 160, textAlign: 'right', fontSize: 12, color: '#e2e8f0', fontWeight: 500 }}>
+                {fmtGoalValue(goalId, r.m)}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function ComparisonView({ deals, assumptions }) {
   const metrics = deals.map(d => ({ ...computeMetrics(d, assumptions), deal: d }))
 
@@ -653,7 +982,7 @@ export default function App() {
   const [assumptions, setAssumptions] = useState(DEFAULT_ASSUMPTIONS)
   const [deals, setDeals] = useState(SAMPLE_DEALS)
   const [activeId, setActiveId] = useState(SAMPLE_DEALS[0]?.id ?? null)
-  const [view, setView] = useState('deal') // 'deal' | 'compare'
+  const [view, setView] = useState('deal') // 'deal' | 'advisor' | 'compare' | 'assumptions'
 
   const activeDeal = deals.find(d => d.id === activeId)
 
@@ -684,6 +1013,10 @@ export default function App() {
         <div style={{ display: 'flex', gap: 6, marginLeft: 20 }}>
           <button style={S.tab(view === 'deal')} onClick={() => setView('deal')}>Deal View</button>
           <button style={S.tab(view === 'compare')} onClick={() => setView('compare')}>Compare</button>
+          <button style={{
+            ...S.tab(view === 'advisor'),
+            ...(view !== 'advisor' ? { background: '#1a0d3d', color: '#a78bfa', border: '1px solid #4c1d95' } : { background: '#7c3aed', border: '1px solid #7c3aed' })
+          }} onClick={() => setView('advisor')}>⚡ Advisor</button>
           <button style={S.tab(view === 'assumptions')} onClick={() => setView('assumptions')}>Assumptions</button>
         </div>
         <div style={{ marginLeft: 'auto', color: '#4a5568', fontSize: 11 }}>
@@ -719,6 +1052,7 @@ export default function App() {
         {/* Main */}
         <div style={S.main}>
           {view === 'compare' && <ComparisonView deals={deals} assumptions={assumptions} />}
+          {view === 'advisor' && <AdvisorView deals={deals} assumptions={assumptions} />}
           {view === 'assumptions' && <AssumptionsPanel assumptions={assumptions} onChange={setAssumptions} />}
           {view === 'deal' && activeDeal && (
             <DealForm deal={activeDeal} assumptions={assumptions} onChange={updateDeal} />
